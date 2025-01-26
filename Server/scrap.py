@@ -25,9 +25,9 @@ class Scrap:
         self.data = []
         # Initialize Reddit client
         self.reddit = asyncpraw.Reddit(
-            client_id="ZMdRLRAWJA2zWy0Q6xCOLw",  # Remplacez par votre client_id
-            client_secret="c9pj5v3WpbdCPOzaRG7Dr1Z9vICsgg",  # Remplacez par votre client_secret
-            user_agent="Stock Sentiment Scraper by Majestic_Buy_2756"  # Un user agent personnalisé
+            client_id="ZMdRLRAWJA2zWy0Q6xCOLw",  # Replace with your client_id
+            client_secret="c9pj5v3WpbdCPOzaRG7Dr1Z9vICsgg",  # Replace with your client_secret
+            user_agent="Stock Sentiment Scraper by Majestic_Buy_2756"  # Custom user agent
         )
         # Initialize Twitter client
         self.twitter_client = Client(language="en-US")
@@ -218,30 +218,28 @@ class Scrap:
             r"\bFLASH\b",
             r"\bCEO\b",
         ]
-        df = df[
-            ~df[text_column].str.contains(
-                "|".join(spam_keywords), flags=re.IGNORECASE, regex=True
-            )
-        ]
+        df = df[~df[text_column].str.contains(
+            "|".join(spam_keywords), flags=re.IGNORECASE, regex=True
+        )]
 
         # Remove links, mentions, and tickers
-        df[text_column] = df[text_column].str.replace(
+        df[text_column] = df[text_column].replace(
             r"http\S+|www.\S+", "", regex=True
         )  # URLs
-        df[text_column] = df[text_column].str.replace(
+        df[text_column] = df[text_column].replace(
             r"@\w+", "", regex=True
         )  # Mentions
-        df[text_column] = df[text_column].str.replace(
+        df[text_column] = df[text_column].replace(
             r"\$\w+", "", regex=True
         )  # Tickers ($TSLA)
 
         # Remove emojis, special characters, and excessive whitespace
         df[text_column] = df[text_column].apply(self.remove_emojis)
-        df[text_column] = df[text_column].str.replace(
+        df[text_column] = df[text_column].replace(
             r"[^\w\s]", " ", regex=True
         )  # Non-alphanumeric characters
         df[text_column] = (
-            df[text_column].str.replace(r"\s+", " ", regex=True).str.strip()
+            df[text_column].replace(r"\s+", " ", regex=True).str.strip()
         )  # Excess whitespace
 
         # Convert to lowercase for uniformity
