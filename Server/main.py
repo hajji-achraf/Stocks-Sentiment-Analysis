@@ -1,14 +1,17 @@
+# Filename: main.py
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
+from scrap import Scrap
 import pandas as pd
-from .scrap import Scrap
-import numpy as np
+import os
+import uvicorn  # Pour démarrer le serveur avec le bon port
 
 app = FastAPI()
 
-# Allow CORS from all origins (or restrict as needed)
+# Add the following CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,19 +21,12 @@ app.add_middleware(
 )
 
 
+# Request model for the scrap endpoint
 class ScrapRequest(BaseModel):
-    """
-    Input model for the scrap endpoint.
-    - stock: the stock ticker or name
-    - platforms: list of platforms to scrape (reddit, twitter, finviz)
-    - days: how many days of data to fetch
-    - max_tweets: max tweets for Twitter
-    """
-
     stock: str
-    platforms: List[str]
-    days: int = 7
-    max_tweets: int = 500
+    platforms: List[str]  # List of platforms to scrape from
+    days: int = 7  # Default number of days to scrape
+    max_tweets: int = 500  # Applicable only for Twitter scraping
 
 
 @app.get("/")
@@ -43,56 +39,47 @@ async def scrap_data(request: ScrapRequest):
     scrap = Scrap()
     try:
         dfs = []
-
-        # SCRAPE data from each platform
         for platform in request.platforms:
-            try:
-                if platform == "reddit":
-                    df = await scrap.scrap_reddit(request.stock, days=request.days)
-                elif platform == "twitter":
-                    df = await scrap.scrap_twitter(
-                        request.stock, days=request.days, max_tweets=request.max_tweets
-                    )
-                elif platform == "finviz":
-                    df = scrap.scrap_finviz(request.stock, days=request.days)
-                else:
-                    continue
-            except Exception as e:
-                print(f"Error scraping {platform}: {e}")
-                continue
+            platform = platform.lower()
+            if platform == "reddit":
+                df = scrap.scrap_reddit(request.stock, days=request.days)
+            elif platform == "twitter":
+                df = await scrap.scrap_twitter(
+                    request.stock, days=request.days, max_tweets=request.max_tweets
+                )
+            elif platform == "finviz":
+                df = scrap.scrap_finviz(request.stock, days=request.days)
+            else:
+                continue  # Skip invalid platforms
+
             if not df.empty:
                 dfs.append(df)
 
         if not dfs:
             raise HTTPException(
-                status_code=404,
-                detail="No data found. Please check stock/platforms/days.",
+                status_code=404, detail="No data found for the given parameters"
             )
 
-        # COMBINE all DataFrames
+        # Combine dataframes from all platforms
         combined_df = pd.concat(dfs, ignore_index=True)
-        combined_df.fillna("", inplace=True)
-        for col in combined_df.select_dtypes(include=["float", "int"]).columns:
-            combined_df[col] = combined_df[col].fillna(0).astype(float)
 
-        # CLEAN the combined data
+        # Clean the combined data
         df_clean = scrap.clean_text_data(combined_df)
 
-        # RUN sentiment analysis
+        # Perform sentiment analysis and get prediction
         df_sentiment, prediction = scrap.analyze_sentiment(df_clean)
 
-        # Prepare the final response
-        data = df_sentiment.to_dict(orient="records")
-        for record in data:
-            for key, value in record.items():
-                if isinstance(value, float) and not np.isfinite(value):
-                    record[key] = 0
-
-        return {"prediction": prediction, "data": data}
+        # Return the prediction and data
+        data = {
+            "prediction": prediction,
+            "data": df_sentiment.to_dict(orient="records"),
+        }
+        return data
 
     except Exception as e:
-        import traceback
+        raise HTTPException(status_code=500, detail=str(e))
 
-        error_message = traceback.format_exc()
-        print(f"Error: {error_message}")
-        raise HTTPException(status_code=500, detail={"error": str(e)})
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 8000))  # Récupère le port depuis l'environnement (8000 par défaut)
+    uvicorn.run(app, host="0.0.0.0", port=port)  # Démarre l'application avec le bon port
