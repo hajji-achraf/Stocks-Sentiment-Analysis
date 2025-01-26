@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
-from scrap import Scrap
+from .scrap import Scrap
 import pandas as pd
 import os
 import uvicorn  # Pour démarrer le serveur avec le bon port
