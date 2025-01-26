@@ -1,202 +1,118 @@
-import os
-import time
-import re
-import asyncio
-import requests
-import numpy as np
-import pandas as pd
-import nltk
-import emoji
-from datetime import datetime, timedelta, timezone
-from random import randint
-from bs4 import BeautifulSoup
-
-# Reddit
 import asyncpraw
-
-# Twitter
+import praw
+import pandas as pd
+from datetime import datetime, timedelta, timezone
+import requests
+from bs4 import BeautifulSoup
 from twikit import Client, TooManyRequests
+from random import randint
+import time
+import asyncio
 
-# Text similarity
+import re
+import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-
-# NLTK
+import nltk
 from nltk.corpus import stopwords
+import emoji
 
-# Transformers (FinBERT)
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
-
-# Dotenv
-from dotenv import load_dotenv, dotenv_values
-
-# Load environment variables
-load_dotenv()
 
 
 class Scrap:
-    """
-    A class to scrape data from Reddit, FinViz, and Twitter,
-    clean the text, analyze sentiments using FinBERT,
-    and provide a final 'Up', 'Down', or 'Neutral' prediction.
-    """
-
     def __init__(self):
-        """
-        Initialize:
-          - Data containers
-          - Reddit client
-          - Twitter client
-          - NLTK resources
-        """
         self.data = []
+        # Initialize Reddit client
         self.reddit = asyncpraw.Reddit(
-            client_id=os.getenv("REDDIT_CLIENT_ID"),
-            client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
-            user_agent=os.getenv("REDDIT_USER_AGENT"),
+            client_id="ZMdRLRAWJA2zWy0Q6xCOLw",  # Remplacez par votre client_id
+            client_secret="c9pj5v3WpbdCPOzaRG7Dr1Z9vICsgg",  # Remplacez par votre client_secret
+            user_agent="Stock Sentiment Scraper by Majestic_Buy_2756"  # Un user agent personnalisé
         )
-
+        # Initialize Twitter client
         self.twitter_client = Client(language="en-US")
-        self.twitter_client.load_cookies("cookies.json")  # Twitter cookies
-
+        self.twitter_client.load_cookies("cookies.json")
+        # Ensure NLTK stopwords are downloaded
         try:
             nltk.data.find("corpora/stopwords")
         except LookupError:
             nltk.download("stopwords", quiet=True)
 
-        self.stop_words = set(stopwords.words("english"))
+    def scrap_reddit(self, stock_name, days=7):
+        posts = []
+        now = datetime.utcnow()
+        since_time = now - timedelta(days=days)
 
-        ############################################################################
-        #                           REDDIT SCRAPING
-        ############################################################################
+        search_query = f'"{stock_name}"'
 
-        async def scrap_reddit(self, stock_name, days=7):
-            """
-            Scrapes Reddit for mentions of `stock_name` within the past `days`.
-            Returns a DataFrame with columns: [date, text, upvotes]
-            """
-            posts = []
-            now = datetime.utcnow()
-            since_time = now - timedelta(days=days)
+        submissions = self.reddit.subreddit("all").search(
+            search_query, sort="new", time_filter="all", limit=None
+        )
 
-            # Use the search query with asyncpraw
-            if days <= 7:
-                time_filter = "week"
-            elif days <= 30:
-                time_filter = "month"
-            elif days <= 365:
-                time_filter = "year"
-            else:
-                time_filter = "all"
+        for submission in submissions:
+            created_utc = datetime.utcfromtimestamp(submission.created_utc)
+            if created_utc < since_time:
+                continue
 
-            search_query = f'"{stock_name}"'
-            async for submission in self.reddit.subreddit("all").search(
-                search_query, sort="new", time_filter=time_filter, limit=None
-            ):
-                created_utc = datetime.utcfromtimestamp(submission.created_utc)
-                if created_utc < since_time:
-                    continue
+            combined_text = f"{submission.title} {submission.selftext}"
 
-                combined_text = f"{submission.title} {submission.selftext}"
-                upvotes = submission.score or 0
-
-                posts.append(
-                    {
-                        "date": created_utc.isoformat(),
-                        "text": combined_text,
-                        "upvotes": upvotes,
-                    }
-                )
-
-            df = pd.DataFrame(posts)
-            if df.empty:
-                print("No Reddit data found for the specified date range.")
-            return df
-
-    ############################################################################
-    #                           FINVIZ SCRAPING
-    ############################################################################
+            posts.append(
+                {
+                    "date": created_utc.isoformat(),
+                    "text": combined_text,
+                }
+            )
+        df = pd.DataFrame(posts)
+        self.data.append(df)
+        return df
 
     def scrap_finviz(self, ticker, days=3):
-        """
-        Scrapes the FinViz news table for a given `ticker`.
-        Returns a DataFrame with columns: [date, text]
-        """
         finviz_url = "https://finviz.com/quote.ashx?t="
         headers = {"User-Agent": "Mozilla/5.0"}
         url = finviz_url + ticker
         response = requests.get(url, headers=headers)
 
-        if response.status_code != 200:
+        if response.status_code == 200:
+            html = BeautifulSoup(response.text, features="html.parser")
+            news_table = html.find(id="news-table")
+
+            parsed_data = []
+            previous_date = None
+
+            for row in news_table.findAll("tr"):
+                title = row.a.text.strip()
+                date_data = row.td.text.strip()
+
+                if len(date_data.split()) == 1:
+                    time_part = date_data
+                    date_part = previous_date
+                else:
+                    date_part, time_part = date_data.split(" ", 1)
+                    previous_date = date_part
+
+                if date_part.lower() == "today":
+                    date_part = datetime.now().strftime("%b-%d-%y")
+                elif date_part.lower() == "yesterday":
+                    date_part = (datetime.now() - timedelta(days=1)).strftime(
+                        "%b-%d-%y"
+                    )
+
+                date_time_str = f"{date_part} {time_part}"
+                date_time_obj = datetime.strptime(date_time_str, "%b-%d-%y %I:%M%p")
+
+                if date_time_obj >= datetime.now() - timedelta(days=days):
+                    parsed_data.append([date_time_obj.isoformat(), title])
+
+            df = pd.DataFrame(parsed_data, columns=["date", "text"])
+            self.data.append(df)
+            return df
+        else:
             print(
                 f"Failed to fetch data for {ticker}. HTTP status code: {response.status_code}"
             )
             return pd.DataFrame()
 
-        html = BeautifulSoup(response.text, features="html.parser")
-        news_table = html.find(id="news-table")
-        if not news_table:
-            print(f"No news table found on FinViz for ticker: {ticker}")
-            return pd.DataFrame()
-
-        parsed_data = []
-        now = datetime.now()
-        cutoff_date = now - timedelta(days=days)
-
-        previous_date = None
-        for row in news_table.findAll("tr"):
-            # Guard clauses if row doesn't have the expected structure
-            if not row.a or not row.td:
-                continue
-
-            title = row.a.text.strip()
-            date_data = row.td.text.strip()
-
-            # Some rows show only time
-            if len(date_data.split()) == 1:
-                time_part = date_data
-                date_part = previous_date
-            else:
-                # Full date time
-                date_part, time_part = date_data.split(" ", 1)
-                previous_date = date_part
-
-            # Replace 'Today' or 'Yesterday' for clarity
-            if date_part.lower() == "today":
-                date_part = now.strftime("%b-%d-%y")
-            elif date_part.lower() == "yesterday":
-                date_part = (now - timedelta(days=1)).strftime("%b-%d-%y")
-
-            date_time_str = f"{date_part} {time_part}"
-            try:
-                date_time_obj = datetime.strptime(date_time_str, "%b-%d-%y %I:%M%p")
-            except ValueError:
-                # Sometimes FinViz changes formats slightly
-                continue
-
-            if date_time_obj < cutoff_date:
-                # If we've gone past the date range, we can break (assuming chronological order)
-                break
-
-            parsed_data.append([date_time_obj.isoformat(), title])
-
-        df = pd.DataFrame(parsed_data, columns=["date", "text"])
-        if df.empty:
-            print(f"No FinViz data found for {ticker} in last {days} days.")
-            return df
-
-        self.data.append(df)
-        return df
-
-    ############################################################################
-    #                           TWITTER SCRAPING
-    ############################################################################
-
     async def _fetch_tweets(self, query, existing_tweets=None):
-        """
-        Fetch tweets from Twitter. If existing_tweets is None,
-        it starts a new query; otherwise, it fetches the next batch.
-        """
         if existing_tweets is None:
             print(f"{datetime.now()} - Fetching tweets for query: {query}")
             return await self.twitter_client.search_tweet(query, product="Latest")
@@ -209,9 +125,6 @@ class Scrap:
             return await existing_tweets.next()
 
     async def _handle_rate_limit(self, e):
-        """
-        Handle Twitter's rate limit. Wait until the limit resets.
-        """
         rate_limit_reset = datetime.fromtimestamp(e.rate_limit_reset)
         wait_time = (rate_limit_reset - datetime.now()).total_seconds()
         if wait_time > 0:
@@ -220,16 +133,11 @@ class Scrap:
             )
             await asyncio.sleep(wait_time)
 
-    async def scrap_twitter(self, stock_name, days=1, max_tweets=300):
-        """
-        Async method to scrape Twitter for `stock_name` within `days`.
-        Returns a DataFrame with columns: [date, text, likes]
-        """
+    async def scrap_twitter(self, stock_name, days=1, max_tweets=500):
         since_time = datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(
             days=days
         )
-        query = f'"{stock_name}" lang:en min_faves:10 -filter:links -filter:replies'
-        # min_faves:10 ensures the tweet has at least some likes
+        query = f'"{stock_name}" lang:en min_faves:20 -filter:links -filter:replies'
 
         tweet_count = 0
         tweets = None
@@ -241,9 +149,6 @@ class Scrap:
             except TooManyRequests as e:
                 await self._handle_rate_limit(e)
                 continue
-            except Exception as ex:
-                print(f"Unexpected error while fetching tweets: {ex}")
-                break
 
             if not tweets:
                 print(f"{datetime.now()} - No more tweets found.")
@@ -251,81 +156,57 @@ class Scrap:
 
             for tweet in tweets:
                 created_at = tweet.created_at
+
                 if isinstance(created_at, str):
-                    # Format: "Tue Jan 24 14:42:39 +0000 2023"
                     created_at = datetime.strptime(
                         created_at, "%a %b %d %H:%M:%S %z %Y"
                     )
-
                 if created_at < since_time:
                     print(
-                        f"{datetime.now()} - Reached tweets older than {days} days. Stopping collection."
+                        f"{datetime.now()} - Reached tweets older than the time range. Stopping collection."
                     )
-                    return pd.DataFrame(posts)
+                    df = pd.DataFrame(posts)
+                    self.data.append(df)
+                    return df
 
                 tweet_count += 1
-                # Attempt to get 'favorite_count' if the library provides it
-                # If not, we store a placeholder 1 or 0
-                likes_count = getattr(tweet, "favorite_count", 1) or 1
-
                 posts.append(
                     {
                         "date": created_at.isoformat(),
                         "text": tweet.text,
-                        "likes": likes_count,
                     }
                 )
 
                 if tweet_count >= max_tweets:
                     print(
-                        f"{datetime.now()} - Reached the maximum number of tweets ({max_tweets}). Stopping."
+                        f"{datetime.now()} - Reached the maximum number of tweets ({max_tweets}). Stopping collection."
                     )
                     break
 
-            print(f"{datetime.now()} - Collected {tweet_count} tweets so far.")
+            print(f"{datetime.now()} - Collected {tweet_count} tweets.")
 
         df = pd.DataFrame(posts)
-        if df.empty:
-            print("No Twitter data found for the specified query/time range.")
-            return df
-
         self.data.append(df)
         return df
 
-    ############################################################################
-    #                           TEXT CLEANING
-    ############################################################################
-
     def remove_emojis(self, text):
-        """
-        Remove emojis from text using the 'emoji' library.
-        Also removes common emoticons using regex.
-        """
-        text = emoji.replace_emoji(text, "")  # remove unicode emojis
+        text = emoji.replace_emoji(text, "")
 
         # Remove common text-based emoticons
-        # Expand pattern to cover more emoticons if needed
-        emoticons_pattern = re.compile(r"[:;=]-?[()\/\\|dpDP]|[()<>}{]")
+        emoticons_pattern = re.compile(r"[:;=]-?[)(/\\|dpDP]|[)(/<>]{}")
         text = emoticons_pattern.sub("", text)
+
         return text
 
     def clean_text_data(self, df, text_column="text", similarity_threshold=0.9):
-        """
-        Cleans the text in `df[text_column]` using:
-          - Remove spam keywords
-          - Remove URLs, mentions, tickers
-          - Remove emojis/special chars
-          - Remove duplicates and near-duplicates
-          - Remove stopwords
-        Returns the cleaned DataFrame.
-        """
+        df = df.copy()
         if text_column not in df.columns:
             raise ValueError(f"Column '{text_column}' not found in DataFrame.")
 
-        # Fill NaNs and enforce string type
+        # Ensure text column is a string and fill NaNs
         df[text_column] = df[text_column].fillna("").astype(str)
 
-        # Remove spam-like phrases
+        # Remove unnecessary phrases and spam-like content
         spam_keywords = [
             r"\bBREAKING NEWS\b",
             r"\bBUY NOW\b",
@@ -343,7 +224,7 @@ class Scrap:
             )
         ]
 
-        # Remove URLs, mentions, tickers
+        # Remove links, mentions, and tickers
         df[text_column] = df[text_column].str.replace(
             r"http\S+|www.\S+", "", regex=True
         )  # URLs
@@ -354,29 +235,28 @@ class Scrap:
             r"\$\w+", "", regex=True
         )  # Tickers ($TSLA)
 
-        # Remove emojis, punctuation, special characters
+        # Remove emojis, special characters, and excessive whitespace
         df[text_column] = df[text_column].apply(self.remove_emojis)
-        df[text_column] = df[text_column].str.replace(r"[^\w\s]", " ", regex=True)
-
-        # Convert to lower case
-        df[text_column] = df[text_column].str.lower()
-
-        # Remove extra whitespace
+        df[text_column] = df[text_column].str.replace(
+            r"[^\w\s]", " ", regex=True
+        )  # Non-alphanumeric characters
         df[text_column] = (
             df[text_column].str.replace(r"\s+", " ", regex=True).str.strip()
-        )
+        )  # Excess whitespace
 
-        # Remove short texts
+        # Convert to lowercase for uniformity
+        df[text_column] = df[text_column].str.lower()
+
+        # Remove short texts and filter by length
         df = df[df[text_column].str.len() > 20]
 
-        # Remove stopwords
+        # Remove stopwords for sentiment analysis
+        stop_words = set(stopwords.words("english"))
         df[text_column] = df[text_column].apply(
-            lambda x: " ".join(
-                word for word in x.split() if word not in self.stop_words
-            )
+            lambda x: " ".join(word for word in x.split() if word not in stop_words)
         )
 
-        # Drop exact duplicates
+        # Remove duplicate and near-duplicate texts
         df = df.drop_duplicates(subset=[text_column])
 
         # Remove near-duplicates based on cosine similarity
@@ -389,142 +269,75 @@ class Scrap:
                 if idx in to_drop:
                     continue
                 duplicates = np.where(pairwise_sim[idx] > similarity_threshold)[0]
-                # Exclude itself and only remove duplicates with higher index (so we keep the first occurrence)
                 duplicates = [i for i in duplicates if i != idx and i > idx]
                 to_drop.update(duplicates)
 
             df = df.drop(df.index[list(to_drop)])
 
+        # Reset index for consistency
         df = df.reset_index(drop=True)
+
         return df
 
-    ############################################################################
-    #                           SENTIMENT ANALYSIS
-    ############################################################################
-
-    def analyze_sentiment(self, df, text_column="text", weight_column=None):
-        """
-        Uses FinBERT to analyze sentiment (positive/negative/neutral).
-        Handles missing or invalid data gracefully.
-        """
-        if df.empty:
-            print("No data to analyze for sentiment. Defaulting to NEUTRAL.")
-            return df, "The stock sentiment is NEUTRAL. (No data)"
-
-        # Load FinBERT
+    def analyze_sentiment(self, df, text_column="text"):
+        # Load FinBERT tokenizer and model
         tokenizer = AutoTokenizer.from_pretrained("yiyanghkust/finbert-tone")
         model = AutoModelForSequenceClassification.from_pretrained(
             "yiyanghkust/finbert-tone"
         )
+
+        # Set up the sentiment analysis pipeline
         sentiment_analysis = pipeline(
             "sentiment-analysis", model=model, tokenizer=tokenizer
         )
+
+        # Define the maximum token length for FinBERT
         max_length = 512
 
+        # Function to truncate text that exceeds the maximum token length
         def truncate_text(text):
-            # Tokenize + keep only the allowed length
+            # Tokenize and keep only the allowed length
             tokens = tokenizer.encode(text, truncation=True, max_length=max_length)
             return tokenizer.decode(tokens, skip_special_tokens=True)
 
-        # Run FinBERT on each text row and add sentiment columns
-        try:
-            sentiments = df[text_column].apply(
-                lambda t: sentiment_analysis(truncate_text(t))[0]
-            )
-            df["sentiment_label"] = sentiments.apply(lambda x: x["label"].lower())
-            df["sentiment_score"] = sentiments.apply(lambda x: x["score"])
-        except Exception as e:
-            print(f"Error during sentiment analysis: {e}")
-            df["sentiment_label"] = "neutral"
-            df["sentiment_score"] = 0
+        # Apply sentiment analysis to each truncated text entry
+        sentiments = df[text_column].apply(
+            lambda text: sentiment_analysis(truncate_text(text))[0]
+        )
 
-        # Weighted approach
-        if weight_column and weight_column in df.columns:
-            df["weight"] = df[weight_column].fillna(1).astype(float).clip(lower=1)
+        # Extract sentiment label and score from the result
+        df["sentiment_label"] = sentiments.apply(lambda x: x["label"].lower())
+        df["sentiment_score"] = sentiments.apply(lambda x: x["score"])
+
+        # Aggregate the sentiment labels
+        sentiment_counts = df["sentiment_label"].value_counts()
+
+        # Debugging output
+        print("Sentiment counts:", sentiment_counts)
+
+        # Determine overall sentiment
+        positive = sentiment_counts.get("positive", 0)
+        negative = sentiment_counts.get("negative", 0)
+        neutral = sentiment_counts.get("neutral", 0)
+
+        total = positive + negative + neutral
+
+        if total == 0:
+            overall_sentiment = "neutral"
         else:
-            df["weight"] = 1.0
-
-        # Summation structures
-        weighted_positive = 0.0
-        weighted_negative = 0.0
-        weighted_neutral = 0.0
-        total_weight = 0.0
-
-        for _, row in df.iterrows():
-            label = row["sentiment_label"]
-            w = row["weight"]
-            total_weight += w
-
-            if label == "positive":
-                weighted_positive += w
-            elif label == "negative":
-                weighted_negative += w
+            if positive > negative:
+                overall_sentiment = "positive"
+            elif negative > positive:
+                overall_sentiment = "negative"
             else:
-                weighted_neutral += w
+                overall_sentiment = "neutral"
 
-        if total_weight == 0:
-            pos_share = neg_share = neu_share = 0  # Default to zero
-        else:
-            pos_share = weighted_positive / total_weight
-            neg_share = weighted_negative / total_weight
-            neu_share = weighted_neutral / total_weight
-
-        print("Weighted sentiment distribution:")
-        print(f"  Positive: {pos_share:.2f}")
-        print(f"  Negative: {neg_share:.2f}")
-        print(f"  Neutral:  {neu_share:.2f}")
-
-        # Final prediction logic
-        if pos_share > neg_share and pos_share >= 0.4:
+        # Decide whether stock will go up or down based on overall sentiment
+        if overall_sentiment == "positive":
             prediction = "The stock is predicted to go UP based on the sentiments."
-        elif neg_share > pos_share and neg_share >= 0.4:
+        elif overall_sentiment == "negative":
             prediction = "The stock is predicted to go DOWN based on the sentiments."
         else:
             prediction = "The stock sentiment is NEUTRAL."
 
         return df, prediction
-
-
-# ------------------ Example usage (synchronous part) ------------------ #
-# if __name__ == "__main__":
-#     """
-#     Simple demonstration of how you might use the 'Scrap' class.
-#     """
-#     scraper = Scrap()
-
-#     # ---- Reddit ----
-#     reddit_data = scraper.scrap_reddit("TSLA", days=3)
-#     reddit_data_clean = scraper.clean_text_data(reddit_data, text_column="text")
-
-#     # ---- FinViz ----
-#     finviz_data = scraper.scrap_finviz("TSLA", days=3)
-#     finviz_data_clean = scraper.clean_text_data(finviz_data, text_column="text")
-
-#     # ---- Twitter (needs async run) ----
-#     async def get_twitter_data():
-#         return await scraper.scrap_twitter("TSLA", days=1, max_tweets=100)
-
-#     loop = asyncio.get_event_loop()
-#     twitter_data = loop.run_until_complete(get_twitter_data())
-#     twitter_data_clean = scraper.clean_text_data(twitter_data, text_column="text")
-
-#     # Combine all data
-#     combined_df = pd.concat([reddit_data_clean, finviz_data_clean, twitter_data_clean], ignore_index=True)
-
-#     # If you want to do a single sentiment pass on combined data:
-#     # Weighted by upvotes for Reddit, likes for Twitter. If both columns exist, pick one or sum them.
-#     # We'll unify them under a single column called 'weight' for demonstration:
-#     # Priority: 'upvotes' if they exist, else 'likes'
-#     if "upvotes" in combined_df.columns:
-#         combined_df["weight"] = combined_df.get("upvotes", 1)
-#     elif "likes" in combined_df.columns:
-#         combined_df["weight"] = combined_df.get("likes", 1)
-#     else:
-#         combined_df["weight"] = 1
-
-#     # Analyze
-#     sentiment_df, final_prediction = scraper.analyze_sentiment(
-#         combined_df, text_column="text", weight_column="weight"
-#     )
-
-#     print("Final Prediction:", final_prediction)
